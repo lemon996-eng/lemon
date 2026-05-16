@@ -50,33 +50,39 @@ if file1 and file2:
                     if '品番' in df1.columns and '個数' in df1.columns:
                         valid_sheet_written = True
                         
-                        # 💡 [요청사항 반영] '品番' 열에서 '-000-'가 포함된 행을 원천 제외합니다.
-                        # 데이터가 문자열이 아닐 경우를 대비해 str 타입으로 변환 후 검사합니다.
+                        # '-000-'가 포함된 행 제외
                         df1 = df1[~df1['品番'].astype(str).str.contains('-000-', na=False)].copy()
                         df2 = df2[~df2['品番'].astype(str).str.contains('-000-', na=False)].copy()
                         
-                        # 1. 신규 추가 추출
+                        # 1. 신규 추가 추출 (B에만 있는 것)
                         new = df2[~df2['品番'].isin(df1['品番'])].copy()
                         new['변경유형'] = '신규 추가'
                         new['個数_신규'] = new['個数']
                         
-                        # 2. 개수 변경 추출
+                        # 2. 개수 변경 추출 (A, B 둘 다 있고 수량이 다른 것)
                         merged = pd.merge(df2, df1[['品番', '個数']], on='品番', suffixes=('_신규', '_기존'))
-                        changed = merged[merged['個数_신규'] != merged['個数_기존']].copy()
+                        changed = merged[merged['個数_신규'] != merged['個_기존']].copy()
                         changed['변경유형'] = '개수 변경'
                         changed['個数'] = changed['個数_기존']
                         
+                        # 3. 💡 [새로 추가] 삭제 추출 (A에는 있지만 B에는 없는 것)
+                        deleted = df1[~df1['品番'].isin(df2['品番'])].copy()
+                        deleted['변경유형'] = '삭제'
+                        deleted['個数_신규'] = '-' # 삭제되었으므로 신규 개수는 - 처리
+                        
                         new_count = len(new)
                         change_count = len(changed)
+                        delete_count = len(deleted)
                         
-                        # 3. 데이터 합치기
-                        final = pd.concat([new, changed], ignore_index=True)
+                        # 4. 데이터 합치기
+                        final = pd.concat([new, changed, deleted], ignore_index=True)
                         
                         summary_results.append({
                             '시트명': sheet,
                             '신규추가': new_count,
                             '개수변경': change_count,
-                            '총변동': new_count + change_count
+                            '삭제': delete_count,
+                            '총변동': new_count + change_count + delete_count
                         })
                         
                         if len(final) == 0:
@@ -100,22 +106,36 @@ if file1 and file2:
                             cols.insert(idx + 1, '個数_신규')
                             final = final[cols]
                         
-                        # 4. 시트에 데이터 쓰기
+                        # 5. 시트에 데이터 쓰기
                         final.to_excel(writer, sheet_name=sheet, index=False)
                         
-                        # 5. 엑셀 디자인 및 스타일 적용
+                        # 6. 엑셀 디자인 및 스타일 적용
                         worksheet = writer.sheets[sheet]
-                        yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+                        yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid") # 노란색
+                        red_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")   # 💡 연한 빨간색 (가독성 확보)
                         
-                        target_col_idx = None
+                        # 각 열의 위치(인덱스) 확인
+                        type_col_idx = None # '변경유형' 열 위치
+                        new_col_idx = None  # '個数_신규' 열 위치
+                        
                         for cell in worksheet[1]:
+                            if cell.value == '변경유형':
+                                type_col_idx = cell.column
                             if cell.value == '個数_신규':
-                                target_col_idx = cell.column
-                                break
+                                new_col_idx = cell.column
                         
-                        if target_col_idx:
-                            for row in range(2, worksheet.max_row + 1):
-                                worksheet.cell(row=row, column=target_col_idx).fill = yellow_fill
+                        # 💡 행별 조건에 맞춰 색상 칠하기
+                        for row in range(2, worksheet.max_row + 1):
+                            change_type = worksheet.cell(row=row, column=type_col_idx).value if type_col_idx else ""
+                            
+                            if change_type == '삭제':
+                                # '삭제' 항목은 그 줄 전체를 연한 빨간색으로 하이라이트
+                                for col in range(1, worksheet.max_column + 1):
+                                    worksheet.cell(row=row, column=col).fill = red_fill
+                            elif change_type in ['신규 추가', '개수 변경']:
+                                # 기존 '개수 변경', '신규 추가'는 개수_신규 열만 노란색 처리
+                                if new_col_idx:
+                                    worksheet.cell(row=row, column=new_col_idx).fill = yellow_fill
                         
                         # 열 너비 자동 조절
                         for col in worksheet.columns:
@@ -138,7 +158,7 @@ if file1 and file2:
                     st.info(
                         f"📄 **{result['시트명']}** 시트 결과: "
                         f"총 **{result['총변동']}건**의 변동 사항이 발견되었습니다. "
-                        f"(신규 추가: {result['신규추가']}건 / 개수 변경: {result['개수변경']}건)"
+                        f"(신규 추가: {result['신규추가']}건 / 개수 변경: {result['개수변경']}건 / 삭제: {result['삭제']}건)"
                     )
                 else:
                     st.write(f"⚪ **{result['시트명']}** 시트: 일치함 (변동 사항 없음)")
