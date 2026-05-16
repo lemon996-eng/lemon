@@ -14,34 +14,34 @@ except:
 # 로고 표시
 col_logo, _ = st.columns([1, 4])
 with col_logo:
-    try: st.image("logo.png", width=200)
-    except: pass
+    try:
+        st.image("logo.png", width=200)
+    except:
+        pass
 
 st.title("🚀 품목 비교 자동화 앱")
-st.info("한국아사히마시나리(주) 전용 - 항목 행 자동 탐색 및 문법 최적화 버전")
+st.info("한국아사히마시나리(주) 전용 - 항목 행 자동 탐색 통합 버전")
 st.write("---")
 
-# 💡 [핵심 함수] 항목명이 있는 행을 찾는 로직 (문법 오류 해결)
+# 💡 [핵심 함수] 품번과 수량이 있는 행을 자동으로 찾아내는 로직
 def get_cleaned_df(file, sheet_name):
     """행을 하나씩 검사하며 '品番'과 '個数'가 있는 줄을 찾아 그 아래 데이터를 반환합니다."""
     try:
-        # 일단 헤더 없이 상단 100행을 읽어옵니다.
+        # 상단 100행을 읽어 항목명이 어디 있는지 찾습니다.
         raw_df = pd.read_excel(file, sheet_name=sheet_name, header=None, nrows=100)
         
         header_row_idx = None
         for i, row in raw_df.iterrows():
-            # 줄의 모든 셀 값을 하나로 합쳐서 검색 (공백 제거)
+            # 줄의 내용을 합쳐서 키워드가 있는지 확인 (공백 제거)
             row_str = "".join([str(val) for val in row.values if pd.notna(val)]).replace(" ", "")
-            
-            # 💡 수정된 부분: 바다코끼리 연산자 제거 후 가장 안전한 비교 방식 사용
-            if "品番" in row_str and "個数" in row_str:
+            if "品番" in row_str and "個수" in row_str or ("品番" in row_str and "個数" in row_str):
                 header_row_idx = i
                 break
         
         if header_row_idx is not None:
-            # 찾은 행 번호를 헤더로 지정하여 데이터 다시 읽기
+            # 찾은 행 번호를 제목으로 지정하여 데이터 다시 읽기
             df = pd.read_excel(file, sheet_name=sheet_name, header=header_row_idx)
-            # 컬럼명 앞뒤 공백 제거
+            # 컬럼명 정규화
             df.columns = [str(c).replace(" ", "").strip() for c in df.columns]
             return df
     except:
@@ -73,14 +73,12 @@ if file1 and file2:
                 if sheet_stripped in xl2_sheets_stripped:
                     sheet2_actual = xl2_sheets_stripped[sheet_stripped]
                     
-                    # 자동 탐색 로직 실행
+                    # 자동 탐색 실행
                     df1 = get_cleaned_df(file1, sheet)
                     df2 = get_cleaned_df(file2, sheet2_actual)
                     
-                    # 두 파일 모두에서 필요한 열이 확인된 경우만 진행
                     if df1 is not None and df2 is not None and '品番' in df1.columns and '個数' in df2.columns:
-                        
-                        # 특정 패턴 제외 (-000-)
+                        # 제외 패턴 처리
                         df1 = df1[~df1['品番'].astype(str).str.contains('-000-', na=False)].copy()
                         df2 = df2[~df2['品番'].astype(str).str.contains('-000-', na=False)].copy()
                         
@@ -90,7 +88,7 @@ if file1 and file2:
                         new['個数_신규'] = new['個数']
                         
                         merged = pd.merge(df2, df1[['品番', '個数']], on='品番', suffixes=('_신규', '_기존'))
-                        changed = merged[merged['個수_신규'] != merged['個数_기존']].copy()
+                        changed = merged[merged['個数_신규'] != merged['個数_기존']].copy()
                         changed['변경유형'] = '개수 변경'
                         changed['個数'] = changed['個数_기존']
                         
@@ -127,29 +125,10 @@ if file1 and file2:
                             if cell.value == '個数_신규': n_idx = cell.column
                         
                         for row in range(2, ws.max_row + 1):
-                            ctype = ws.cell(row=row, column=type_idx).value if t_idx else ""
+                            ctype = ws.cell(row=row, column=t_idx).value if t_idx else ""
                             if ctype == '삭제':
                                 for c in range(1, ws.max_column + 1): ws.cell(row=row, column=c).fill = red
                             elif ctype in ['신규 추가', '개수 변경'] and n_idx:
                                 ws.cell(row=row, column=n_idx).fill = yellow
                         
-                        for col in ws.columns:
-                            max_len = max(len(str(cell.value or '')) for cell in col)
-                            ws.column_dimensions[col[0].column_letter].width = max(max_len + 3, 12)
-                        
-                        summary_results.append({
-                            '시트명': sheet, '신규': len(new), '변경': len(changed), '삭제': len(deleted), '총': len(final)
-                        })
-
-            # 시트가 하나도 없을 경우 방어
-            if sheets_found_count == 0:
-                pd.DataFrame({'결과': ['品番/個数 항목을 포함한 행을 찾지 못했거나 일치하는 시트가 없습니다.']}).to_excel(writer, sheet_name='분석 결과 없음', index=False)
-
-        # 결과 리포트 출력
-        if sheets_found_count > 0:
-            st.success(f"✅ 분석 완료! 총 {sheets_found_count}개의 시트를 분석했습니다.")
-            for res in summary_results:
-                if res['총'] > 0:
-                    st.info(f"📄 **{res['시트명']}**: 변동 {res['총']}건 (추가 {res['신규']}, 변경 {res['변경']}, 삭제 {res['삭제']})")
-                else:
-                    st.write(f"⚪ **{res['시
+                        for
