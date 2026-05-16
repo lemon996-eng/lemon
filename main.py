@@ -61,20 +61,20 @@ if file1 and file2:
                         
                         # 2. 개수 변경 추출 (A, B 둘 다 있고 수량이 다른 것)
                         merged = pd.merge(df2, df1[['品番', '個数']], on='品番', suffixes=('_신규', '_기존'))
-                        changed = merged[merged['個数_신규'] != merged['個_기존']].copy()
+                        changed = merged[merged['個数_신규'] != merged['個数_기존']].copy()
                         changed['변경유형'] = '개수 변경'
                         changed['個数'] = changed['個数_기존']
                         
-                        # 3. 💡 [새로 추가] 삭제 추출 (A에는 있지만 B에는 없는 것)
+                        # 3. 삭제 추출 (A에는 있지만 B에는 없는 것)
                         deleted = df1[~df1['品番'].isin(df2['品番'])].copy()
                         deleted['변경유형'] = '삭제'
-                        deleted['個数_신규'] = '-' # 삭제되었으므로 신규 개수는 - 처리
+                        deleted['個数_신규'] = '-'
                         
                         new_count = len(new)
                         change_count = len(changed)
                         delete_count = len(deleted)
                         
-                        # 4. 데이터 합치기
+                        # 💡 [교정 위치] 세 가지 변동 데이터를 모두 합친 후에 비어있는지 검사해야 합니다!
                         final = pd.concat([new, changed, deleted], ignore_index=True)
                         
                         summary_results.append({
@@ -85,6 +85,7 @@ if file1 and file2:
                             '총변동': new_count + change_count + delete_count
                         })
                         
+                        # 세 가지 다 합쳤는데도 변동 사항이 0개일 때만 빈 시트를 만들고 넘어감
                         if len(final) == 0:
                             pd.DataFrame(columns=['品番', '個数', '個数_신규', '변경유형']).to_excel(writer, sheet_name=sheet, index=False)
                             continue
@@ -106,17 +107,16 @@ if file1 and file2:
                             cols.insert(idx + 1, '個数_신규')
                             final = final[cols]
                         
-                        # 5. 시트에 데이터 쓰기
+                        # 4. 시트에 데이터 쓰기
                         final.to_excel(writer, sheet_name=sheet, index=False)
                         
-                        # 6. 엑셀 디자인 및 스타일 적용
+                        # 5. 엑셀 디자인 및 스타일 적용
                         worksheet = writer.sheets[sheet]
-                        yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid") # 노란색
-                        red_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")   # 💡 연한 빨간색 (가독성 확보)
+                        yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+                        red_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
                         
-                        # 각 열의 위치(인덱스) 확인
-                        type_col_idx = None # '변경유형' 열 위치
-                        new_col_idx = None  # '個数_신규' 열 위치
+                        type_col_idx = None
+                        new_col_idx = None
                         
                         for cell in worksheet[1]:
                             if cell.value == '변경유형':
@@ -124,16 +124,13 @@ if file1 and file2:
                             if cell.value == '個数_신규':
                                 new_col_idx = cell.column
                         
-                        # 💡 행별 조건에 맞춰 색상 칠하기
                         for row in range(2, worksheet.max_row + 1):
                             change_type = worksheet.cell(row=row, column=type_col_idx).value if type_col_idx else ""
                             
                             if change_type == '삭제':
-                                # '삭제' 항목은 그 줄 전체를 연한 빨간색으로 하이라이트
                                 for col in range(1, worksheet.max_column + 1):
                                     worksheet.cell(row=row, column=col).fill = red_fill
                             elif change_type in ['신규 추가', '개수 변경']:
-                                # 기존 '개수 변경', '신규 추가'는 개수_신규 열만 노란색 처리
                                 if new_col_idx:
                                     worksheet.cell(row=row, column=new_col_idx).fill = yellow_fill
                         
