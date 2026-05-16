@@ -17,12 +17,12 @@ except:
     pass
 
 st.title("🚀 품목 비교 자동화 앱")
-st.info("한국아사히마시나리(주) 전용 - 데이터 밀착 정렬 및 시스템 안정화 버전")
+st.info("한국아사히마시나리(주) 전용 - 시스템 안정화 및 열 순서 최적화 버전")
 
-# 2. 항목 행(品番/個数) 자동 탐색 함수 (강화됨)
+# 2. 항목 행(品番/個数) 자동 탐색 함수 (강화)
 def get_cleaned_df(file, sheet_name):
     try:
-        # 상단 150행까지 범위를 넓혀 탐색합니다.
+        # 상단 150행까지 탐색 범위를 넓힙니다.
         raw_df = pd.read_excel(file, sheet_name=sheet_name, header=None, nrows=150)
         if raw_df.empty: return None
         
@@ -30,14 +30,14 @@ def get_cleaned_df(file, sheet_name):
         for i, row in raw_df.iterrows():
             # 행의 값을 문자열로 합치고 공백 제거
             row_str = "".join([str(val) for val in row.values if pd.notna(val)]).replace(" ", "")
-            # 일본어 전각/반각, 한자 표기 차이(個数 vs 個數) 등 모두 대응
+            # 일본어 전각/반각, 오타(個수) 등 다양한 표기 대응
             if "品番" in row_str and ("個" in row_str):
                 header_row_idx = i
                 break
         
         if header_row_idx is not None:
             df = pd.read_excel(file, sheet_name=sheet_name, header=header_row_idx)
-            # 컬럼명에서 공백 제거 및 특수문자 정규화
+            # 컬럼명 정규화 (공백 제거)
             df.columns = [str(c).replace(" ", "").strip() for c in df.columns]
             return df
     except:
@@ -57,7 +57,7 @@ if file1 and file2:
         summary_results = []
         output = io.BytesIO()
         
-        # 💡 저장 시 에러를 방지하기 위해 엔진 시작 전 초기화
+        # 💡 [핵심] 엑셀 쓰기 엔진 시작
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             xl2_sheets = {str(s).strip(): s for s in xl2.sheet_names}
             written_sheets_count = 0
@@ -68,21 +68,23 @@ if file1 and file2:
                     df1 = get_cleaned_df(file1, sheet)
                     df2 = get_cleaned_df(file2, xl2_sheets[sheet_s])
                     
-                    # 필수 항목 확인 시 분석 진행
+                    # 품번 항목이 확인된 경우만 진행
                     if df1 is not None and df2 is not None and '品番' in df1.columns:
-                        # '個'가 포함된 컬럼을 찾아 '個数'로 통일 (표기 차이 해결)
+                        # 수량 열(個)을 찾아서 '個数'로 이름 통일
                         for c in df1.columns:
-                            if "個" in c: df1.rename(columns={c: '個数'}, inplace=True)
+                            if "個" in c: df1.rename(columns={c: '個수'}, inplace=True)
                         for c in df2.columns:
                             if "個" in c: df2.rename(columns={c: '個数'}, inplace=True)
                         
-                        if '個数' in df1.columns and '個数' in df2.columns:
-                            # 변동 추출
+                        # 최종적으로 '品番'과 '個数'가 모두 존재할 때 분석
+                        if '品番' in df1.columns and '個数' in df2.columns:
+                            # 제외 패턴 처리 (-000-)
                             df1 = df1[~df1['品番'].astype(str).str.contains('-000-', na=False)].copy()
                             df2 = df2[~df2['品番'].astype(str).str.contains('-000-', na=False)].copy()
                             
+                            # 신규 / 변경 / 삭제 데이터 추출
                             new = df2[~df2['品番'].isin(df1['品番'])].copy()
-                            new['변경유형'], new['個数_신규'] = '신규 추가', new['個수']
+                            new['변경유형'], new['個数_신규'] = '신규 추가', new['個数']
                             
                             m = pd.merge(df2, df1[['品番', '個数']], on='品番', suffixes=('_신규', '_기존'))
                             chg = m[m['個数_신규'] != m['個数_기존']].copy()
@@ -93,41 +95,51 @@ if file1 and file2:
                             
                             final = pd.concat([new, chg, dele], ignore_index=True)
                             
-                            # 💡 [핵심] 열 순서 밀착 정렬
+                            # 💡 [핵심] 열 순서 밀착 정렬 (E, H열 분리 방지)
+                            # 필수 4개 열을 맨 앞으로 고정
                             essential_cols = ['변경유형', '品番', '個数', '個数_신규']
+                            # 원본에 있던 기타 열(품명 등)을 뒤로 배치
                             other_cols = [c for c in final.columns if c not in essential_cols and 'Unnamed' not in str(c) and '기존' not in str(c)]
                             final = final[essential_cols + other_cols]
 
-                            # 시트 쓰기
+                            # 엑셀 시트 생성
                             s_name = sheet[:31]
                             final.to_excel(writer, sheet_name=s_name, index=False)
                             written_sheets_count += 1
                             
-                            # 스타일 적용
+                            # 스타일 적용 (openpyxl)
                             ws = writer.sheets[s_name]
                             y_f = PatternFill(start_color="FFFF00", fill_type="solid")
                             r_f = PatternFill(start_color="FFC7CE", fill_type="solid")
                             
+                            # 열 위치: 1:변경유형, 4:個数_신규
                             for r_idx in range(2, ws.max_row + 1):
-                                tp = ws.cell(row=r_idx, column=1).value # 변경유형이 1열
+                                tp = ws.cell(row=r_idx, column=1).value
                                 if tp == '삭제':
-                                    for c_idx in range(1, ws.max_column + 1): ws.cell(row=r_idx, column=c_idx).fill = r_f
+                                    for c_idx in range(1, ws.max_column + 1):
+                                        ws.cell(row=r_idx, column=c_idx).fill = r_f
                                 elif tp in ['신규 추가', '개수 변경']:
-                                    ws.cell(row=r_idx, column=4).fill = y_f # 개수_신규가 4열
+                                    ws.cell(row=r_idx, column=4).fill = y_f
                             
+                            # 열 너비 자동 조절
                             for col in ws.columns:
                                 max_l = max(len(str(cell.value or "")) for cell in col)
                                 ws.column_dimensions[col[0].column_letter].width = max(max_l + 3, 12)
                             
                             summary_results.append({'시트': sheet, '총': len(final)})
 
-            # 💡 [방어 코드] 시트가 하나도 없을 때 에러 방지용 가이드 시트 생성
+            # 💡 [IndexError 방지] 시트가 하나도 없을 때 에러 방지용 가이드 시트 생성
             if written_sheets_count == 0:
-                pd.DataFrame({'분석 결과': ['品番 또는 個数 항목을 찾지 못했거나 일치하는 시트가 없습니다.']}).to_excel(writer, sheet_name='결과 없음', index=False)
+                pd.DataFrame({'분석 결과': ['항목명(品番, 個数)을 찾지 못했거나 일치하는 시트가 없습니다.']}).to_excel(writer, sheet_name='결과 없음', index=False)
 
-        # 결과 출력
+        # 4. 결과 출력
         if written_sheets_count > 0:
             st.success(f"✅ 분석 완료! ({written_sheets_count}개 시트)")
+            for r in summary_results:
+                if r['총'] > 0:
+                    st.info(f"📄 **{r['시트']}**: 총 {r['총']}건의 변동 사항")
+                else:
+                    st.write(f"⚪ **{r['시트']}**: 변동 사항 없음")
             st.download_button("💾 결과 엑셀 다운로드", data=output.getvalue(), file_name="한국아사히마시나리_비교결과.xlsx")
         else:
-            st.error("⚠️ 파일 내에서 '品番' 행을 찾지 못했습니다. 엑셀의 항목명을 확인해주세요.")
+            st.error("⚠️ 파일 내에서 '品番' 항목을 찾지 못했습니다. 엑셀 파일의 양식을 다시 확인해 주세요.")
