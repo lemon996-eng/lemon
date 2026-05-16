@@ -4,7 +4,7 @@ import io
 from PIL import Image
 from openpyxl.styles import PatternFill
 
-# 1. 앱 설정
+# 1. 앱 기본 설정
 try:
     img = Image.open("logo.png")
     st.set_page_config(page_title="품목 비교 자동화 앱", page_icon=img, layout="wide")
@@ -17,16 +17,19 @@ except:
     pass
 
 st.title("🚀 품목 비교 자동화 앱")
-st.info("한국아사히마시나리(주) 전용 - 데이터 정밀 통합 버전")
+st.info("한국아사히마시나리(주) 전용 - 데이터 정밀 분석 및 시스템 안정화 버전")
 
 # 2. 항목 행(品番/個数) 자동 탐색 함수
 def get_cleaned_df(file, sheet_name):
     try:
         raw_df = pd.read_excel(file, sheet_name=sheet_name, header=None, nrows=100)
+        if raw_df.empty: return None
+        
         header_row_idx = None
         for i, row in raw_df.iterrows():
             row_str = "".join([str(val) for val in row.values if pd.notna(val)]).replace(" ", "")
-            if "品番" in row_str and "個" in row_str:
+            # 일본어 전각/반각, 오타(個수) 등 다양한 표기 대응
+            if "品番" in row_str and ("個" in row_str):
                 header_row_idx = i
                 break
         
@@ -38,7 +41,7 @@ def get_cleaned_df(file, sheet_name):
         return None
     return None
 
-# 3. 파일 업로드 및 분석
+# 3. 분석 시작
 col1, col2 = st.columns(2)
 with col1:
     file1 = st.file_uploader("첫 번째(기준: A) 파일 업로드", type=['xlsx'])
@@ -62,47 +65,44 @@ if file1 and file2:
                     df2 = get_cleaned_df(file2, xl2_sheets[sheet_s])
                     
                     if df1 is not None and df2 is not None and '品番' in df1.columns:
-                        # 수량 컬럼명을 '個数'로 통일 (오타 방지)
+                        # 수량 열 이름을 '個数'로 강제 통일 (오타 방지)
                         for c in df1.columns:
                             if "個" in str(c): df1.rename(columns={c: '個数'}, inplace=True)
                         for c in df2.columns:
-                            if "個" in str(c): df2.rename(columns={c: '個수'}, inplace=True)
+                            if "個" in str(c): df2.rename(columns={c: '개수'}, inplace=True)
                             
-                        if '個数' in df1.columns and '個数' in df2.columns:
-                            df1 = df1[~df1['品番'].astype(str).str.contains('-000-', na=False)].copy()
-                            df2 = df2[~df2['品番'].astype(str).str.contains('-000-', na=False)].copy()
+                        if '개수' in df1.columns and '개수' in df2.columns:
+                            df1_c = df1[~df1['品番'].astype(str).str.contains('-000-', na=False)].copy()
+                            df2_c = df2[~df2['品番'].astype(str).str.contains('-000-', na=False)].copy()
                             
-                            # 1. 신규 추가
-                            new = df2[~df2['品番'].isin(df1['品番'])].copy()
-                            new['변경유형'] = '신규 추가'
-                            new['個数_신규'] = new['個数']
+                            # 데이터 추출
+                            new = df2_c[~df2_c['品番'].isin(df1_c['品番'])].copy()
+                            new['변경유형'], new['개수_신규'] = '신규 추가', new['개수']
                             
-                            # 2. 개수 변경
-                            m = pd.merge(df2, df1[['品番', '개수']], on='品番', suffixes=('_신규', '_기존'))
-                            chg = m[m['個数_신규'] != m['個数_기존']].copy()
-                            chg['변경유형'] = '개수 변경'
-                            chg['개수'] = chg['개수_기존'] # 기존 수량 유지
+                            m = pd.merge(df2_c, df1_c[['品番', '개수']], on='品番', suffixes=('_신규', '_기존'))
+                            chg = m[m['개수_신규'] != m['개수_기존']].copy()
+                            chg['변경유형'], chg['개수_신규'] = '개수 변경', chg['개수_신규']
+                            chg['개수'] = chg['개수_기존']
                             
-                            # 3. 삭제
-                            dele = df1[~df1['品番'].isin(df2['品番'])].copy()
-                            dele['변경유형'] = '삭제'
-                            dele['개수_신규'] = '-'
+                            dele = df1_c[~df1_c['品番'].isin(df2_c['品番'])].copy()
+                            dele['변경유형'], dele['개수_신규'] = '삭제', '-'
                             
                             final = pd.concat([new, chg, dele], ignore_index=True)
                             
-                            # 💡 불필요한 중복 열 정리 (한글 '수' 포함된 열 등 삭제)
-                            drop_list = [c for c in final.columns if 'Unnamed' in str(c) or '기존' in str(c) or '個수' in str(c)]
-                            final = final.drop(columns=drop_list, errors='ignore')
-                            
-                            # 💡 열 순서 고정 (변경유형, 품번, 기존개수, 신규개수 순)
-                            essential = ['변경유형', '品番', '個数', '個数_신규']
-                            cols = essential + [c for c in final.columns if c not in essential]
-                            final = final[cols]
+                            # 💡 불필요 열 완벽 제거 및 순서 밀착 (A, B, C, D열 고정)
+                            essential_cols = ['변경유형', '品番', '개수', '개수_신규']
+                            # 존재하지 않는 열이 있을 경우 대비
+                            final_cols = [c for c in essential_cols if c in final.columns]
+                            # 품명 등 기타 정보가 있다면 뒤에 붙임
+                            other_cols = [c for c in final.columns if c not in final_cols and 'Unnamed' not in str(c) and '기존' not in str(c)]
+                            final = final[final_cols + other_cols]
 
+                            # 시트 생성
                             s_name = sheet[:31]
                             final.to_excel(writer, sheet_name=s_name, index=False)
                             written_sheets_count += 1
                             
+                            # 스타일 적용
                             ws = writer.sheets[s_name]
                             y_f = PatternFill(start_color="FFFF00", fill_type="solid")
                             r_f = PatternFill(start_color="FFC7CE", fill_type="solid")
@@ -110,10 +110,9 @@ if file1 and file2:
                             for r_idx in range(2, ws.max_row + 1):
                                 tp = ws.cell(row=r_idx, column=1).value
                                 if tp == '삭제':
-                                    for c_idx in range(1, ws.max_column + 1):
-                                        ws.cell(row=r_idx, column=c_idx).fill = r_f
+                                    for c_idx in range(1, ws.max_column + 1): ws.cell(row=r_idx, column=c_idx).fill = r_f
                                 elif tp in ['신규 추가', '개수 변경']:
-                                    ws.cell(row=r_idx, column=4).fill = y_f # D열(개수_신규) 색칠
+                                    ws.cell(row=r_idx, column=4).fill = y_f # 4열: 개수_신규
                             
                             for col in ws.columns:
                                 max_l = max(len(str(cell.value or "")) for cell in col)
@@ -121,9 +120,13 @@ if file1 and file2:
                             
                             summary_results.append({'시트': sheet, '총': len(final)})
 
+            # 💡 [결과물 보장] 결과가 없어도 안내 시트를 생성하여 저장 에러 방지
             if written_sheets_count == 0:
-                pd.DataFrame({'결과': ['일치하는 데이터 없음']}).to_excel(writer, sheet_name='결과 없음', index=False)
+                pd.DataFrame({'분석 결과': ['品番 또는 개수 항목을 찾지 못했거나 일치하는 시트가 없습니다.']}).to_excel(writer, sheet_name='결과 없음', index=False)
 
+        # 4. 화면 리포트
         if written_sheets_count > 0:
-            st.success(f"✅ 분석 완료!")
-            st.download_button("💾 결과 엑셀 다운로드", data=output.getvalue(), file_name="품목비교_최종결과.xlsx")
+            st.success(f"✅ 분석 완료! 총 {written_sheets_count}개 시트가 처리되었습니다.")
+            st.download_button("💾 결과 엑셀 다운로드", data=output.getvalue(), file_name="한국아사히마시나리_비교결과.xlsx")
+        else:
+            st.error("⚠️ 시트 내에서 '品番' 행을 찾지 못했습니다. 엑셀 제목 줄을 확인해 주세요.")
