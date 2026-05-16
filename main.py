@@ -25,22 +25,35 @@ if file1 and file2:
         xl1 = pd.ExcelFile(file1)
         xl2 = pd.ExcelFile(file2)
         
-        # 💡 각 시트별 요약 결과를 저장할 딕셔너리 리스트 생성
         summary_results = []
+        # 에러 방지를 위해 매칭된 시트가 있는지 체크할 변수
+        valid_sheet_written = False
         
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            
+            # 비교를 위해 두 번째 파일의 시트 목록을 공백 제거한 형태로 준비
+            xl2_sheets_stripped = {str(s).strip(): s for s in xl2.sheet_names}
+            
             for sheet in xl1.sheet_names:
-                if sheet in xl2.sheet_names:
+                sheet_stripped = str(sheet).strip()
+                
+                # 시트 이름 매칭 (앞뒤 공백 무시)
+                if sheet_stripped in xl2_sheets_stripped:
+                    sheet2_actual_name = xl2_sheets_stripped[sheet_stripped]
+                    
                     header_pos = sheet_headers.get(sheet, 0)
                     df1 = xl1.parse(sheet, header=header_pos)
-                    df2 = xl2.parse(sheet, header=header_pos)
+                    df2 = xl2.parse(sheet2_actual_name, header=header_pos)
                     
                     # 제목 공백 제거
                     df1.columns = [str(c).strip() for c in df1.columns]
                     df2.columns = [str(c).strip() for c in df2.columns]
                     
                     if '品番' in df1.columns and '個数' in df1.columns:
+                        # 시트 작성이 한 번이라도 시작됨을 표시
+                        valid_sheet_written = True
+                        
                         # 1. 신규 추가 추출
                         new = df2[~df2['品番'].isin(df1['品番'])].copy()
                         new['변경유형'] = '신규 추가'
@@ -52,14 +65,12 @@ if file1 and file2:
                         changed['변경유형'] = '개수 변경'
                         changed['個数'] = changed['個数_기존']
                         
-                        # 건수 기록용 데이터 카운트
                         new_count = len(new)
                         change_count = len(changed)
                         
                         # 3. 데이터 합치기
                         final = pd.concat([new, changed], ignore_index=True)
                         
-                        # 💡 웹 화면 요약 목록에 데이터 추가
                         summary_results.append({
                             '시트명': sheet,
                             '신규추가': new_count,
@@ -83,7 +94,7 @@ if file1 and file2:
                         # 열 순서 재배치
                         cols = list(final.columns)
                         if '個数' in cols and '個数_신규' in cols:
-                            cols.remove('個수_신규')
+                            cols.remove('個数_신규')
                             idx = cols.index('個数')
                             cols.insert(idx + 1, '個数_신규')
                             final = final[cols]
@@ -110,24 +121,28 @@ if file1 and file2:
                             max_len = max(len(str(cell.value or '')) for cell in col)
                             col_letter = col[0].column_letter
                             worksheet.column_dimensions[col_letter].width = max(max_len + 3, 10)
+            
+            # 💡 [IndexError 방어용 핵심 코드] 
+            # 만약 매칭된 시트가 하나도 없어서 파일 저장이 불가능할 때 빈 가이드 시트를 강제로 하나 만들어 에러를 막습니다.
+            if not valid_sheet_written:
+                pd.DataFrame({'알림': ['두 파일 간에 일치하는 시트 이름이 없거나 데이터 구조가 다릅니다. 시트 이름을 확인해 주세요.']}).to_excel(writer, sheet_name='비교불가 안내', index=False)
         
-        # 💡 [새로 추가된 화면 출력 영역] 모든 시트 분석 후 요약 브리핑 화면에 띄우기
-        st.success("🎉 모든 시트 분석이 성공적으로 완료되었습니다!")
-        
+        # 화면 출력 영역
+        st.success("분석 프로세스가 완료되었습니다.")
         st.subheader("📋 시트별 실시간 변동 리포트")
         
-        # 4개의 시트 요약 정보를 아주 보기 좋게 화면에 뿌려줍니다.
-        for result in summary_results:
-            if result['총변동'] > 0:
-                # 변동사항이 있는 시트는 파란색 알림창으로 자세히 출력
-                st.info(
-                    f"📄 **{result['시트명']}** 시트 결과: "
-                    f"총 **{result['총변동']}건**의 변동 사항이 발견되었습니다. "
-                    f"(신규 추가: {result['신규추가']}건 / 개수 변경: {result['개수변경']}건)"
-                )
-            else:
-                # 변동사항이 전혀 없는 시트는 회색으로 깔끔하게 처리
-                st.write(f"⚪ **{result['시트명']}** 시트: 일치함 (변동 사항 없음)")
+        if len(summary_results) == 0:
+            st.error("⚠️ 두 엑셀 파일 간에 서로 일치하는 시트 이름을 찾지 못했습니다. 파일의 탭 이름을 다시 확인해 주세요.")
+        else:
+            for result in summary_results:
+                if result['총변동'] > 0:
+                    st.info(
+                        f"📄 **{result['시트명']}** 시트 결과: "
+                        f"총 **{result['총변동']}건**의 변동 사항이 발견되었습니다. "
+                        f"(신규 추가: {result['신규추가']}건 / 개수 변경: {result['개수변경']}건)"
+                    )
+                else:
+                    st.write(f"⚪ **{result['시트명']}** 시트: 일치함 (변동 사항 없음)")
                 
-        st.write("---") # 구분선
-        st.download_button(label="💾 맞춤형 결과 파일 다운로드", data=output.getvalue(), file_name="result.xlsx")
+        st.write("---")
+        st.download_button(label="💾 결과 파일 다운로드", data=output.getvalue(), file_name="result.xlsx")
