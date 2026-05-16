@@ -17,21 +17,25 @@ except:
     pass
 
 st.title("🚀 품목 비교 자동화 앱")
-st.info("한국아사히마시나리(주) 전용 - 시스템 안정화 및 열 순서 최적화 버전")
+st.info("한국아사히마시나리(주) 전용 - 시스템 안정화 및 데이터 정밀 정렬 버전")
 
-# 2. 항목 행(品番/個数) 자동 탐색 함수 (강화)
+# 2. 항목 행(品番/個数) 자동 탐색 함수 (강화 버전)
 def get_cleaned_df(file, sheet_name):
     try:
-        # 상단 150행까지 탐색 범위를 넓힙니다.
+        # 상단 150행까지 탐색 범위를 대폭 넓힙니다.
         raw_df = pd.read_excel(file, sheet_name=sheet_name, header=None, nrows=150)
         if raw_df.empty: return None
         
         header_row_idx = None
         for i, row in raw_df.iterrows():
-            # 행의 값을 문자열로 합치고 공백 제거
+            # 행의 모든 값을 문자열로 합치고 공백 제거 (검색 정확도 향상)
             row_str = "".join([str(val) for val in row.values if pd.notna(val)]).replace(" ", "")
-            # 일본어 전각/반각, 오타(個수) 등 다양한 표기 대응
-            if "品番" in row_str and ("個" in row_str):
+            
+            # 💡 탐색 키워드 강화: 품번(品番)과 수량 관련 한자/한글 모두 대응
+            has_id = "品番" in row_str
+            has_qty = any(keyword in row_str for keyword in ["個", "数量", "개수", "수량"])
+            
+            if has_id and has_qty:
                 header_row_idx = i
                 break
         
@@ -68,21 +72,22 @@ if file1 and file2:
                     df1 = get_cleaned_df(file1, sheet)
                     df2 = get_cleaned_df(file2, xl2_sheets[sheet_s])
                     
-                    # 품번 항목이 확인된 경우만 진행
+                    # 품번 항목이 확인된 경우 진행
                     if df1 is not None and df2 is not None and '品番' in df1.columns:
-                        # 수량 열(個)을 찾아서 '個数'로 이름 통일
+                        # 💡 수량 관련 열 이름을 '個数'로 통일
                         for c in df1.columns:
-                            if "個" in c: df1.rename(columns={c: '個수'}, inplace=True)
+                            if any(k in c for k in ["個", "数量", "개수", "수량"]):
+                                df1.rename(columns={c: '個数'}, inplace=True)
                         for c in df2.columns:
-                            if "個" in c: df2.rename(columns={c: '個数'}, inplace=True)
+                            if any(k in c for k in ["個", "数量", "개수", "수량"]):
+                                df2.rename(columns={c: '個数'}, inplace=True)
                         
-                        # 최종적으로 '品番'과 '個数'가 모두 존재할 때 분석
-                        if '品番' in df1.columns and '個数' in df2.columns:
-                            # 제외 패턴 처리 (-000-)
+                        # 최종적으로 필요한 열이 확보되었을 때만 분석
+                        if '個수' in df1.columns and '個数' in df2.columns:
+                            # 변동 추출 로직
                             df1 = df1[~df1['品番'].astype(str).str.contains('-000-', na=False)].copy()
                             df2 = df2[~df2['品番'].astype(str).str.contains('-000-', na=False)].copy()
                             
-                            # 신규 / 변경 / 삭제 데이터 추출
                             new = df2[~df2['品番'].isin(df1['品番'])].copy()
                             new['변경유형'], new['個数_신규'] = '신규 추가', new['個数']
                             
@@ -95,10 +100,8 @@ if file1 and file2:
                             
                             final = pd.concat([new, chg, dele], ignore_index=True)
                             
-                            # 💡 [핵심] 열 순서 밀착 정렬 (E, H열 분리 방지)
-                            # 필수 4개 열을 맨 앞으로 고정
-                            essential_cols = ['변경유형', '品番', '個数', '個数_신규']
-                            # 원본에 있던 기타 열(품명 등)을 뒤로 배치
+                            # 💡 [요청사항 반영] 열 순서 밀착 정렬 (A:변경유형, B:품번, C:기존개수, D:신규개수)
+                            essential_cols = ['변경유형', '品番', '個数', '個수_신규']
                             other_cols = [c for c in final.columns if c not in essential_cols and 'Unnamed' not in str(c) and '기존' not in str(c)]
                             final = final[essential_cols + other_cols]
 
@@ -107,39 +110,38 @@ if file1 and file2:
                             final.to_excel(writer, sheet_name=s_name, index=False)
                             written_sheets_count += 1
                             
-                            # 스타일 적용 (openpyxl)
+                            # 스타일 적용
                             ws = writer.sheets[s_name]
                             y_f = PatternFill(start_color="FFFF00", fill_type="solid")
                             r_f = PatternFill(start_color="FFC7CE", fill_type="solid")
                             
-                            # 열 위치: 1:변경유형, 4:個数_신규
                             for r_idx in range(2, ws.max_row + 1):
                                 tp = ws.cell(row=r_idx, column=1).value
                                 if tp == '삭제':
                                     for c_idx in range(1, ws.max_column + 1):
                                         ws.cell(row=r_idx, column=c_idx).fill = r_f
                                 elif tp in ['신규 추가', '개수 변경']:
-                                    ws.cell(row=r_idx, column=4).fill = y_f
+                                    ws.cell(row=r_idx, column=4).fill = y_f # 4번째 열(D열) 색칠
                             
-                            # 열 너비 자동 조절
+                            # 너비 자동 조절
                             for col in ws.columns:
                                 max_l = max(len(str(cell.value or "")) for cell in col)
                                 ws.column_dimensions[col[0].column_letter].width = max(max_l + 3, 12)
                             
                             summary_results.append({'시트': sheet, '총': len(final)})
 
-            # 💡 [IndexError 방지] 시트가 하나도 없을 때 에러 방지용 가이드 시트 생성
+            # 💡 [중요] 시트가 하나도 없을 때 에러 방지용 가이드 시트 강제 생성
             if written_sheets_count == 0:
-                pd.DataFrame({'분석 결과': ['항목명(品番, 個数)을 찾지 못했거나 일치하는 시트가 없습니다.']}).to_excel(writer, sheet_name='결과 없음', index=False)
+                pd.DataFrame({'알림': ['品番 또는 개수 항목을 찾지 못했거나 일치하는 시트가 없습니다. 엑셀의 항목명을 확인해주세요.']}).to_excel(writer, sheet_name='결과 없음', index=False)
 
-        # 4. 결과 출력
+        # 4. 화면 결과 리포트
         if written_sheets_count > 0:
             st.success(f"✅ 분석 완료! ({written_sheets_count}개 시트)")
             for r in summary_results:
                 if r['총'] > 0:
-                    st.info(f"📄 **{r['시트']}**: 총 {r['총']}건의 변동 사항")
+                    st.info(f"📄 **{r['시트']}**: {r['총']}건의 변동 사항 발견")
                 else:
                     st.write(f"⚪ **{r['시트']}**: 변동 사항 없음")
             st.download_button("💾 결과 엑셀 다운로드", data=output.getvalue(), file_name="한국아사히마시나리_비교결과.xlsx")
         else:
-            st.error("⚠️ 파일 내에서 '品番' 항목을 찾지 못했습니다. 엑셀 파일의 양식을 다시 확인해 주세요.")
+            st.error("⚠️ 시트 내에서 '品番' 행을 찾지 못했습니다. 엑셀 파일의 양식을 확인해 주세요.")
