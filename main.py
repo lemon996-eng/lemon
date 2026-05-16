@@ -26,19 +26,16 @@ if file1 and file2:
         xl2 = pd.ExcelFile(file2)
         
         summary_results = []
-        # 에러 방지를 위해 매칭된 시트가 있는지 체크할 변수
         valid_sheet_written = False
         
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             
-            # 비교를 위해 두 번째 파일의 시트 목록을 공백 제거한 형태로 준비
             xl2_sheets_stripped = {str(s).strip(): s for s in xl2.sheet_names}
             
             for sheet in xl1.sheet_names:
                 sheet_stripped = str(sheet).strip()
                 
-                # 시트 이름 매칭 (앞뒤 공백 무시)
                 if sheet_stripped in xl2_sheets_stripped:
                     sheet2_actual_name = xl2_sheets_stripped[sheet_stripped]
                     
@@ -51,8 +48,12 @@ if file1 and file2:
                     df2.columns = [str(c).strip() for c in df2.columns]
                     
                     if '品番' in df1.columns and '個数' in df1.columns:
-                        # 시트 작성이 한 번이라도 시작됨을 표시
                         valid_sheet_written = True
+                        
+                        # 💡 [요청사항 반영] '品番' 열에서 '-000-'가 포함된 행을 원천 제외합니다.
+                        # 데이터가 문자열이 아닐 경우를 대비해 str 타입으로 변환 후 검사합니다.
+                        df1 = df1[~df1['品番'].astype(str).str.contains('-000-', na=False)].copy()
+                        df2 = df2[~df2['品番'].astype(str).str.contains('-000-', na=False)].copy()
                         
                         # 1. 신규 추가 추출
                         new = df2[~df2['品番'].isin(df1['品番'])].copy()
@@ -122,8 +123,6 @@ if file1 and file2:
                             col_letter = col[0].column_letter
                             worksheet.column_dimensions[col_letter].width = max(max_len + 3, 10)
             
-            # 💡 [IndexError 방어용 핵심 코드] 
-            # 만약 매칭된 시트가 하나도 없어서 파일 저장이 불가능할 때 빈 가이드 시트를 강제로 하나 만들어 에러를 막습니다.
             if not valid_sheet_written:
                 pd.DataFrame({'알림': ['두 파일 간에 일치하는 시트 이름이 없거나 데이터 구조가 다릅니다. 시트 이름을 확인해 주세요.']}).to_excel(writer, sheet_name='비교불가 안내', index=False)
         
